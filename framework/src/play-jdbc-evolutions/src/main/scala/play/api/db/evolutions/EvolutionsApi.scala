@@ -28,7 +28,7 @@ trait EvolutionsApi {
    * @param schema The schema where all the play evolution tables are saved in
    * @return evolution scripts
    */
-  def scripts(db: String, evolutions: Seq[Evolution], schema: String): Seq[Script]
+  def scripts(db: String, evolutions: Seq[Evolution], dbConfig: EvolutionsDatasourceConfig): Seq[Script]
 
   /**
    * Create evolution scripts.
@@ -38,7 +38,7 @@ trait EvolutionsApi {
    * @param schema The schema where all the play evolution tables are saved in
    * @return evolution scripts
    */
-  def scripts(db: String, reader: EvolutionsReader, schema: String): Seq[Script]
+  def scripts(db: String, reader: EvolutionsReader, dbConfig: EvolutionsDatasourceConfig): Seq[Script]
 
   /**
    * Get all scripts necessary to reset the database state to its initial state.
@@ -47,7 +47,7 @@ trait EvolutionsApi {
    * @param schema The schema where all the play evolution tables are saved in
    * @return evolution scripts
    */
-  def resetScripts(db: String, schema: String): Seq[Script]
+  def resetScripts(db: String, dbConfig: EvolutionsDatasourceConfig): Seq[Script]
 
   /**
    * Apply evolution scripts to the database.
@@ -57,7 +57,7 @@ trait EvolutionsApi {
    * @param autocommit determines whether the connection uses autocommit
    * @param schema The schema where all the play evolution tables are saved in
    */
-  def evolve(db: String, scripts: Seq[Script], autocommit: Boolean, schema: String): Unit
+  def evolve(db: String, scripts: Seq[Script], autocommit: Boolean, dbConfig: EvolutionsDatasourceConfig): Unit
 
   /**
    * Resolve evolution conflicts.
@@ -66,7 +66,7 @@ trait EvolutionsApi {
    * @param revision the revision to mark as resolved
    * @param schema The schema where all the play evolution tables are saved in
    */
-  def resolve(db: String, revision: Int, schema: String): Unit
+  def resolve(db: String, revision: Int, dbConfig: EvolutionsDatasourceConfig): Unit
 }
 
 /**
@@ -75,23 +75,23 @@ trait EvolutionsApi {
 @Singleton
 class DefaultEvolutionsApi @Inject() (dbApi: DBApi) extends EvolutionsApi {
 
-  private def databaseEvolutions(name: String, schema: String) = new DatabaseEvolutions(dbApi.database(name), schema)
+  private def databaseEvolutions(name: String, dbConfig: EvolutionsDatasourceConfig) = new DatabaseEvolutions(dbApi.database(name), dbConfig)
 
-  def scripts(db: String, evolutions: Seq[Evolution], schema: String) = databaseEvolutions(db, schema).scripts(evolutions)
+  def scripts(db: String, evolutions: Seq[Evolution], dbConfig: EvolutionsDatasourceConfig) = databaseEvolutions(db, dbConfig).scripts(evolutions)
 
-  def scripts(db: String, reader: EvolutionsReader, schema: String) = databaseEvolutions(db, schema).scripts(reader)
+  def scripts(db: String, reader: EvolutionsReader, dbConfig: EvolutionsDatasourceConfig) = databaseEvolutions(db, dbConfig).scripts(reader)
 
-  def resetScripts(db: String, schema: String) = databaseEvolutions(db, schema).resetScripts()
+  def resetScripts(db: String, dbConfig: EvolutionsDatasourceConfig) = databaseEvolutions(db, dbConfig).resetScripts()
 
-  def evolve(db: String, scripts: Seq[Script], autocommit: Boolean, schema: String) = databaseEvolutions(db, schema).evolve(scripts, autocommit)
+  def evolve(db: String, scripts: Seq[Script], autocommit: Boolean, dbConfig: EvolutionsDatasourceConfig) = databaseEvolutions(db, dbConfig).evolve(scripts, autocommit)
 
-  def resolve(db: String, revision: Int, schema: String) = databaseEvolutions(db, schema).resolve(revision)
+  def resolve(db: String, revision: Int, dbConfig: EvolutionsDatasourceConfig) = databaseEvolutions(db, dbConfig).resolve(revision)
 }
 
 /**
  * Evolutions for a particular database.
  */
-class DatabaseEvolutions(database: Database, schema: String = "") {
+class DatabaseEvolutions(database: Database, dbConfig: EvolutionsDatasourceConfig) {
 
   import DefaultEvolutionsApi._
   import DatabaseUrlPatterns._
@@ -129,7 +129,7 @@ class DatabaseEvolutions(database: Database, schema: String = "") {
 
       Collections.unfoldLeft(executeQuery(
         """
-            select id, hash, apply_script, revert_script from ${schema}play_evolutions order by id
+            select id, hash, apply_script, revert_script from ${dbConfig.schema}${dbConfig.evolutionsTable} order by id
         """)) { rs =>
         rs.next match {
           case false => None
@@ -151,7 +151,7 @@ class DatabaseEvolutions(database: Database, schema: String = "") {
     def logBefore(script: Script)(implicit conn: Connection): Unit = {
       script match {
         case UpScript(e) => {
-          val ps = prepare("insert into ${schema}play_evolutions (id, hash, applied_at, apply_script, revert_script, state, last_problem) values(?, ?, ?, ?, ?, ?, ?)")
+          val ps = prepare("insert into ${schema}${dbConfig.evolutionsTable} (id, hash, applied_at, apply_script, revert_script, state, last_problem) values(?, ?, ?, ?, ?, ?, ?)")
           ps.setInt(1, e.revision)
           ps.setString(2, e.hash)
           ps.setDate(3, new Date(System.currentTimeMillis()))
@@ -162,7 +162,7 @@ class DatabaseEvolutions(database: Database, schema: String = "") {
           ps.execute()
         }
         case DownScript(e) => {
-          execute("update ${schema}play_evolutions set state = 'applying_down' where id = " + e.revision)
+          execute("update ${schema}${dbConfig.evolutionsTable} set state = 'applying_down' where id = " + e.revision)
         }
       }
     }
@@ -170,16 +170,16 @@ class DatabaseEvolutions(database: Database, schema: String = "") {
     def logAfter(script: Script)(implicit conn: Connection): Boolean = {
       script match {
         case UpScript(e) => {
-          execute("update ${schema}play_evolutions set state = 'applied' where id = " + e.revision)
+          execute("update ${schema}${dbConfig.evolutionsTable} set state = 'applied' where id = " + e.revision)
         }
         case DownScript(e) => {
-          execute("delete from ${schema}play_evolutions where id = " + e.revision)
+          execute("delete from ${schema}${dbConfig.evolutionsTable} where id = " + e.revision)
         }
       }
     }
 
     def updateLastProblem(message: String, revision: Int)(implicit conn: Connection): Boolean = {
-      val ps = prepare("update ${schema}play_evolutions set last_problem = ? where id = ?")
+      val ps = prepare("update ${schema}${dbConfig.evolutionsTable} set last_problem = ? where id = ?")
       ps.setString(1, message)
       ps.setInt(2, revision)
       ps.execute()
@@ -249,7 +249,7 @@ class DatabaseEvolutions(database: Database, schema: String = "") {
 
         execute(createScript)
       } catch {
-        case NonFatal(ex) => logger.warn("could not create ${schema}play_evolutions table", ex)
+        case NonFatal(ex) => logger.warn("could not create ${schema}${dbConfig.evolutionsTable} table", ex)
       }
     }
 
@@ -257,7 +257,7 @@ class DatabaseEvolutions(database: Database, schema: String = "") {
     implicit val connection = database.getConnection(autocommit = autocommit)
 
     try {
-      val problem = executeQuery("select id, hash, apply_script, revert_script, state, last_problem from ${schema}play_evolutions where state like 'applying_%'")
+      val problem = executeQuery("select id, hash, apply_script, revert_script, state, last_problem from ${schema}${dbConfig.evolutionsTable} where state like 'applying_%'")
 
       if (problem.next) {
         val revision = problem.getInt("id")
@@ -292,8 +292,8 @@ class DatabaseEvolutions(database: Database, schema: String = "") {
   def resolve(revision: Int): Unit = {
     implicit val connection = database.getConnection(autocommit = true)
     try {
-      execute("update ${schema}play_evolutions set state = 'applied' where state = 'applying_up' and id = " + revision)
-      execute("delete from ${schema}play_evolutions where state = 'applying_down' and id = " + revision);
+      execute("update ${schema}${dbConfig.evolutionsTable} set state = 'applied' where state = 'applying_up' and id = " + revision)
+      execute("delete from ${schema}${dbConfig.evolutionsTable} where state = 'applying_down' and id = " + revision);
     } finally {
       connection.close()
     }
@@ -314,7 +314,7 @@ class DatabaseEvolutions(database: Database, schema: String = "") {
   }
 
   private def applySchema(sql: String): String = {
-    sql.replaceAll("\\$\\{schema}", Option(schema).filter(_.trim.nonEmpty).map(_.trim + ".").getOrElse(""))
+    sql.replaceAll("\\$\\{schema}", Option(dbConfig.schema).filter(_.trim.nonEmpty).map(_.trim + ".").getOrElse(""))
   }
 
 }
@@ -325,7 +325,7 @@ private object DefaultEvolutionsApi {
 
   val CreatePlayEvolutionsSql =
     """
-      create table ${schema}play_evolutions (
+      create table ${schema}${dbConfig.evolutionsTable} (
           id int not null primary key,
           hash varchar(255) not null,
           applied_at timestamp not null,
@@ -338,7 +338,7 @@ private object DefaultEvolutionsApi {
 
   val CreatePlayEvolutionsSqlServerSql =
     """
-      create table ${schema}play_evolutions (
+      create table ${schema}${dbConfig.evolutionsTable} (
           id int not null primary key,
           hash varchar(255) not null,
           applied_at datetime not null,
@@ -351,7 +351,7 @@ private object DefaultEvolutionsApi {
 
   val CreatePlayEvolutionsOracleSql =
     """
-      CREATE TABLE ${schema}play_evolutions (
+      CREATE TABLE ${schema}${dbConfig.evolutionsTable} (
           id Number(10,0) Not Null Enable,
           hash VARCHAR2(255 Byte),
           applied_at Timestamp Not Null,
@@ -359,13 +359,13 @@ private object DefaultEvolutionsApi {
           revert_script clob,
           state Varchar2(255),
           last_problem clob,
-          CONSTRAINT play_evolutions_pk PRIMARY KEY (id)
+          CONSTRAINT ${dbConfig.evolutionsTable}_pk PRIMARY KEY (id)
       )
     """
 
   val CreatePlayEvolutionsMySql =
     """
-      CREATE TABLE ${schema}play_evolutions (
+      CREATE TABLE ${schema}${dbConfig.evolutionsTable} (
           id int not null primary key,
           hash varchar(255) not null,
           applied_at timestamp not null,
@@ -378,7 +378,7 @@ private object DefaultEvolutionsApi {
 
   val CreatePlayEvolutionsDerby =
     """
-      create table ${schema}play_evolutions (
+      create table ${schema}${dbConfig.evolutionsTable} (
           id int not null primary key,
           hash varchar(255) not null,
           applied_at timestamp not null,
